@@ -1,0 +1,4 @@
+Install JDK from browser
+Open VS code and select Create Java Project(to create java packages)
+Install Extension Pack from Java
+Happy Java Coding my nigga
