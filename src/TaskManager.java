@@ -29,6 +29,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import javax.swing.BorderFactory;
@@ -41,6 +43,7 @@ import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
 import javax.swing.SwingUtilities;
@@ -50,10 +53,14 @@ import javax.swing.plaf.basic.BasicButtonUI;
 
 public class TaskManager extends JFrame {
     private static final Path TASK_FILE = Path.of("tasks.txt");
+    private static final Path HISTORY_FILE = Path.of("history.txt");
     private static final String DONE_PREFIX = "[DONE] ";
+    private static final String HISTORY_SEPARATOR = "\t";
 
     private static final String APP_TITLE = "Task Manager";
     private static final String FONT_FAMILY = "Segoe UI";
+    private static final DateTimeFormatter HISTORY_DATE_FORMAT =
+            DateTimeFormatter.ofPattern("MMM dd, yyyy hh:mm a");
 
     private static final Color APP_BACKGROUND = new Color(245, 247, 250);
     private static final Color BORDER_COLOR = new Color(215, 221, 230);
@@ -68,7 +75,9 @@ public class TaskManager extends JFrame {
     private static final EmptyBorder BUTTON_PADDING = new EmptyBorder(12, 14, 12, 14);
 
     private final DefaultListModel<Task> taskModel = new DefaultListModel<>();
+    private final DefaultListModel<HistoryItem> historyModel = new DefaultListModel<>();
     private final JList<Task> taskList = new JList<>(taskModel);
+    private final JList<HistoryItem> historyList = new JList<>(historyModel);
     private final JTextField taskInput = new JTextField();
     private final JLabel statusLabel = new JLabel();
 
@@ -79,6 +88,7 @@ public class TaskManager extends JFrame {
         configureWindow();
         buildInterface();
         loadTasks();
+        loadHistory();
         refreshStatus();
     }
 
@@ -103,7 +113,7 @@ public class TaskManager extends JFrame {
     private void buildInterface() {
         JPanel rootPanel = createRootPanel();
         rootPanel.add(createHeaderPanel(), BorderLayout.NORTH);
-        rootPanel.add(createTaskScrollPane(), BorderLayout.CENTER);
+        rootPanel.add(createMainTabs(), BorderLayout.CENTER);
         rootPanel.add(createInputPanel(), BorderLayout.SOUTH);
 
         setContentPane(rootPanel);
@@ -115,6 +125,14 @@ public class TaskManager extends JFrame {
         panel.setBorder(PAGE_PADDING);
         panel.setBackground(APP_BACKGROUND);
         return panel;
+    }
+
+    private JTabbedPane createMainTabs() {
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.setFont(new Font(FONT_FAMILY, Font.BOLD, 13));
+        tabs.addTab("Tasks", createTaskScrollPane());
+        tabs.addTab("History", createHistoryScrollPane());
+        return tabs;
     }
 
     private JPanel createHeaderPanel() {
@@ -152,6 +170,14 @@ public class TaskManager extends JFrame {
         return scrollPane;
     }
 
+    private JScrollPane createHistoryScrollPane() {
+        configureHistoryList();
+
+        JScrollPane scrollPane = new JScrollPane(historyList);
+        scrollPane.setBorder(BorderFactory.createLineBorder(BORDER_COLOR));
+        return scrollPane;
+    }
+
     private void configureTaskList() {
         taskList.setFont(new Font(FONT_FAMILY, Font.PLAIN, 16));
         taskList.setFixedCellHeight(36);
@@ -160,6 +186,14 @@ public class TaskManager extends JFrame {
         taskList.setCellRenderer(new TaskCellRenderer());
         taskList.addMouseListener(createTaskMouseListener());
         taskList.addKeyListener(createTaskKeyListener());
+    }
+
+    private void configureHistoryList() {
+        historyList.setFont(new Font(FONT_FAMILY, Font.PLAIN, 15));
+        historyList.setFixedCellHeight(40);
+        historyList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        historyList.setBorder(new EmptyBorder(6, 6, 6, 6));
+        historyList.setCellRenderer(new HistoryCellRenderer());
     }
 
     private MouseAdapter createTaskMouseListener() {
@@ -382,13 +416,16 @@ public class TaskManager extends JFrame {
             return;
         }
 
-        removeCompletedTasks();
+        moveCompletedTasksToHistory();
         saveAndRefresh();
+        saveHistory();
     }
 
-    private void removeCompletedTasks() {
+    private void moveCompletedTasksToHistory() {
         for (int i = taskModel.size() - 1; i >= 0; i--) {
-            if (taskModel.get(i).completed()) {
+            Task task = taskModel.get(i);
+            if (task.completed()) {
+                historyModel.addElement(HistoryItem.fromTask(task));
                 taskModel.remove(i);
             }
         }
@@ -425,6 +462,20 @@ public class TaskManager extends JFrame {
         }
     }
 
+    private void loadHistory() {
+        if (!Files.exists(HISTORY_FILE)) {
+            return;
+        }
+
+        try {
+            for (String line : Files.readAllLines(HISTORY_FILE, StandardCharsets.UTF_8)) {
+                HistoryItem.fromFileLine(line).ifPresent(historyModel::addElement);
+            }
+        } catch (IOException exception) {
+            showError("Could not load history: " + exception.getMessage());
+        }
+    }
+
     private void saveAndRefresh() {
         saveTasks();
         refreshStatus();
@@ -438,10 +489,26 @@ public class TaskManager extends JFrame {
         }
     }
 
+    private void saveHistory() {
+        try {
+            Files.write(HISTORY_FILE, getHistoryFileLines(), StandardCharsets.UTF_8);
+        } catch (IOException exception) {
+            showError("Could not save history: " + exception.getMessage());
+        }
+    }
+
     private List<String> getTaskFileLines() {
         List<String> lines = new ArrayList<>();
         for (int i = 0; i < taskModel.size(); i++) {
             lines.add(taskModel.get(i).toFileLine());
+        }
+        return lines;
+    }
+
+    private List<String> getHistoryFileLines() {
+        List<String> lines = new ArrayList<>();
+        for (int i = 0; i < historyModel.size(); i++) {
+            lines.add(historyModel.get(i).toFileLine());
         }
         return lines;
     }
@@ -517,6 +584,37 @@ public class TaskManager extends JFrame {
         }
     }
 
+    private record HistoryItem(String taskText, String clearedAt) {
+        private static java.util.Optional<HistoryItem> fromFileLine(String line) {
+            String cleanLine = line.trim();
+
+            if (cleanLine.isEmpty()) {
+                return java.util.Optional.empty();
+            }
+
+            String[] parts = cleanLine.split(HISTORY_SEPARATOR, 2);
+            if (parts.length < 2) {
+                return java.util.Optional.of(new HistoryItem(cleanLine, "Unknown time"));
+            }
+
+            return java.util.Optional.of(new HistoryItem(parts[1], parts[0]));
+        }
+
+        private static HistoryItem fromTask(Task task) {
+            String clearedAt = LocalDateTime.now().format(HISTORY_DATE_FORMAT);
+            return new HistoryItem(task.text(), clearedAt);
+        }
+
+        private String toFileLine() {
+            return clearedAt + HISTORY_SEPARATOR + taskText.replace(HISTORY_SEPARATOR, " ");
+        }
+
+        @Override
+        public String toString() {
+            return clearedAt + " - " + taskText;
+        }
+    }
+
     private static class TaskCellRenderer extends DefaultListCellRenderer {
         @Override
         public Component getListCellRendererComponent(
@@ -536,6 +634,31 @@ public class TaskManager extends JFrame {
             if (!isSelected) {
                 label.setForeground(task.completed() ? COMPLETED_TEXT_COLOR : TEXT_COLOR);
                 label.setBackground(task.completed() ? COMPLETED_BACKGROUND : Color.WHITE);
+            }
+
+            return label;
+        }
+    }
+
+    private static class HistoryCellRenderer extends DefaultListCellRenderer {
+        @Override
+        public Component getListCellRendererComponent(
+                JList<?> list,
+                Object value,
+                int index,
+                boolean isSelected,
+                boolean cellHasFocus) {
+            JLabel label = (JLabel) super.getListCellRendererComponent(
+                    list, value, index, isSelected, cellHasFocus);
+
+            HistoryItem item = (HistoryItem) value;
+            label.setText(item.toString());
+            label.setBorder(new EmptyBorder(4, 8, 4, 8));
+            label.setFont(new Font(FONT_FAMILY, Font.PLAIN, 14));
+
+            if (!isSelected) {
+                label.setForeground(MUTED_TEXT_COLOR);
+                label.setBackground(Color.WHITE);
             }
 
             return label;
